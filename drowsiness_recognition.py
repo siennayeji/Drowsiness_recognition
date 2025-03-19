@@ -7,6 +7,8 @@ import os
 import json
 import glob
 from sklearn.model_selection import train_test_split
+import face_detection
+import cv2
 
 # 데이터 로드
 json_dir = "C:/data/json"  # JSON 파일 경로
@@ -32,6 +34,7 @@ def load_json_labels(json_dir, image_dir):
             dataset.append((json_file, image_path, data))
 
     print(f"✅ Loaded {len(dataset)} items")
+
     if len(dataset) == 0:
         raise ValueError("🚨 모든 데이터가 손실되었습니다! JSON 또는 이미지 경로를 확인하세요.")
     
@@ -39,24 +42,12 @@ def load_json_labels(json_dir, image_dir):
 
 data = load_json_labels(json_dir, image_dir)
 
-# ✅ 데이터셋이 비어 있는지 확인
-if len(data) == 0:
-    raise ValueError("🚨 데이터셋이 비어 있습니다! JSON 또는 이미지 경로를 확인하세요.")
-
-print(f"📌 Loaded {len(data)} items")
-
 # 데이터 분할
 train_data, val_data = train_test_split(data, test_size=0.2, random_state=42)
 
 # ✅ 훈련 / 검증 데이터 개수 확인
 print(f"✅ Train dataset size: {len(train_data)}")
 print(f"✅ Validation dataset size: {len(val_data)}")
-
-if len(train_data) == 0:
-    raise ValueError("🚨 훈련 데이터셋이 비어 있습니다! 데이터를 확인하세요.")
-
-if len(val_data) == 0:
-    raise ValueError("🚨 검증 데이터셋이 비어 있습니다! 데이터를 확인하세요.")
 
 # 이미지 변환 정의
 transform = transforms.Compose([
@@ -75,14 +66,16 @@ class DrowsinessDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path, label = self.data[idx]
-        image = Image.open(img_path).convert('RGB')
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except (OSError, IOError):
+            print(f"🚨 Skipping corrupted image: {img_path}")
+            return None  # 손상된 이미지는 건너뜀
 
         if self.transform:
             image = self.transform(image)
 
-        return image, label
-    
-print(f"🔍 데이터 구조 확인: {data[:5]}")
+        return image, label 
 
 # DataLoader 설정
 def collate_fn(batch):
@@ -92,60 +85,84 @@ def collate_fn(batch):
 train_dataset = DrowsinessDataset(train_data, transform=transform)
 val_dataset = DrowsinessDataset(val_data, transform=transform)
 
-# ✅ train_dataset이 비어 있는 경우 에러 방지
-if len(train_dataset) == 0:
-    raise ValueError("🚨 train_dataset이 비어 있습니다! JSON과 이미지 파일을 확인하세요.")
-
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_fn)
 
-# 모델 정의
+
+# CNN + LSTM 모델 정의
 class DrowsinessModel(nn.Module):
     def __init__(self):
         super(DrowsinessModel, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU()
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(16 * 64 * 64, 2)
-
+        self.lstm = nn.LSTM(16 * 64 * 64, 128, batch_first=True)
+        self.fc1 = nn.Linear(128, 2)
     def forward(self, x):
+        batch_size, seq_len, C, H, W = x.shape
+        x = x.view(batch_size * seq_len, C, H, W)
         x = self.pool(self.relu(self.conv1(x)))
-        x = x.view(x.size(0), -1)
-        x = self.fc1(x)
+        x = x.view(batch_size, seq_len, -1)
+        x, _ = self.lstm(x)
+        x = self.fc1(x[:, -1, :])
         return x
 
 # 모델 학습 함수
 def train_model(model, train_loader, val_loader, epochs=5, lr=0.001):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-
         for images, labels in train_loader:
+            images = images.unsqueeze(1)  # LSTM 입력을 위해 (batch, seq_len, C, H, W) 형태로 변환
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, torch.tensor(labels, dtype=torch.long))
+            loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        
-        model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for images, labels in val_loader:
-                outputs = model(images)
-                _, predicted = torch.max(outputs, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-        
-        print(f'📢 Epoch {epoch+1}, Loss: {total_loss / len(train_loader):.4f}, Accuracy: {100 * correct / total:.2f}%')
-    
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_loader):.4f}')
     torch.save(model.state_dict(), 'model.pth')
-    print("✅ Model training complete and saved.")
+    print("✅ Model training complete and saved!")
 
 # 모델 학습 수행
 model = DrowsinessModel()
 train_model(model, train_loader, val_loader)
+
+# 실시간 얼굴 인식 및 졸음 감지
+recent_frames = []
+
+while True:
+    color_image, faces = face_detection.detect_faces()  # ✅ 얼굴 검출 함수 사용
+
+    if color_image is None:
+        continue
+
+    for face in faces:
+        x, y, w, h = face.left(), face.top(), face.width(), face.height()
+        face_img = color_image[y:y+h, x:x+w]
+        face_img = cv2.resize(face_img, (128, 128))
+        face_img = torch.tensor(face_img, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        recent_frames.append(face_img)
+
+        if len(recent_frames) > 10:
+            recent_frames.pop(0)
+
+        if len(recent_frames) == 10:
+            input_tensor = torch.stack(recent_frames).unsqueeze(0)
+            output = model(input_tensor)
+            _, predicted = torch.max(output, 1)
+            label = "Drowsy" if predicted.item() == 1 else "Awake"
+            color = (0, 0, 255) if predicted.item() == 1 else (0, 255, 0)
+            cv2.putText(color_image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+
+        cv2.rectangle(color_image, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    cv2.imshow("Drowsiness Detection", color_image)
+
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
+face_detection.release_camera()  # ✅ 카메라 종료
+cv2.destroyAllWindows()
