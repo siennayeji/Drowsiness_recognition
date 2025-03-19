@@ -1,44 +1,102 @@
-import cv2
-import dlib
-import pyrealsense2 as rs
-import numpy as np
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+from PIL import Image
 
-# Dlib 얼굴 검출기 로드
-detector = dlib.get_frontal_face_detector()
+# CSV 데이터 로드
+csv_file = "C:/dream/facedetection/drowsiness_dataset.csv"
 
-# RealSense 설정 (RGB 스트림만 사용)
-pipeline = rs.pipeline()
-config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)  # RGB 스트림만 활성화
-pipeline.start(config)
+# 데이터셋 클래스
+torch.manual_seed(42)  # 재현성을 위한 시드 고정
+class DrowsinessDataset(Dataset):
+    def __init__(self, csv_file, transform=None):
+        self.data = pd.read_csv(csv_file)
+        self.transform = transform
+        self.image_paths = self.data["ImagePath"].tolist()
+        self.labels = self.data["Label"].tolist()
 
-while True:
-    # RGB 프레임 가져오기
-    frames = pipeline.wait_for_frames()
-    color_frame = frames.get_color_frame()
+    def __len__(self):
+        return len(self.data)
 
-    if not color_frame:
-        continue
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        label = int(self.labels[idx])
 
-    # RGB 이미지 변환
-    color_image = np.asanyarray(color_frame.get_data())
-    gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        try:
+            image = Image.open(img_path).convert("RGB")
+        except:
+            print(f"Skipping corrupted image: {img_path}")
+            return None
 
-    # 얼굴 검출
-    faces = detector(gray)
+        if self.transform:
+            image = self.transform(image)
 
-    # 검출된 얼굴에 박스 그리기
-    for face in faces:
-        x, y, w, h = face.left(), face.top(), face.width(), face.height()
-        cv2.rectangle(color_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        return image, label
 
-    # 화면에 출력
-    cv2.imshow("Dlib Face Detection (RGBD Camera)", color_image)
+# 이미지 변환 정의
+transform = transforms.Compose([
+    transforms.Resize((128, 128)),
+    transforms.ToTensor()
+])
 
-    # ESC 키를 누르면 종료
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
+# 데이터 로드
+dataset = DrowsinessDataset(csv_file, transform=transform)
+train_size = int(0.8 * len(dataset))
+val_size = len(dataset) - train_size
+train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
-# 종료
-pipeline.stop()
-cv2.destroyAllWindows()
+def collate_fn(batch):
+    batch = [item for item in batch if item is not None]
+    return torch.utils.data.default_collate(batch) if batch else None
+
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_fn)
+
+# CNN + LSTM 모델
+torch.manual_seed(42)
+class DrowsinessModel(nn.Module):
+    def __init__(self):
+        super(DrowsinessModel, self).__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1)
+        self.relu = nn.ReLU()
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.lstm = nn.LSTM(16 * 64 * 64, 128, batch_first=True)
+        self.fc1 = nn.Linear(128, 3)
+
+    def forward(self, x):
+        batch_size, seq_len, C, H, W = x.shape
+        x = x.view(batch_size * seq_len, C, H, W)
+        x = self.pool(self.relu(self.conv1(x)))
+        x = x.view(batch_size, seq_len, -1)
+        x, _ = self.lstm(x)
+        x = self.fc1(x[:, -1, :])
+        return x
+
+# 모델 학습 함수
+def train_model(model, train_loader, val_loader, epochs=5, lr=0.001):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+
+        for images, labels in train_loader:
+            images = images.unsqueeze(1)  # (batch, seq_len, C, H, W)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_loader):.4f}")
+
+    torch.save(model.state_dict(), "model.pth")
+    print("✅ Model training complete and saved!")
+
+# 모델 학습 실행
+model = DrowsinessModel()
+train_model(model, train_loader, val_loader)
