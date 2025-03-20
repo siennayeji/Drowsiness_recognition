@@ -19,8 +19,19 @@ def imread_unicode(img_path):
         print(f"🚨 이미지 로드 실패: {img_path}, 오류: {e}")
         return None
 
-# 이미지 전처리
-transform = transforms.Compose([
+# ✅ 데이터 증강 설정 (0,1 클래스만 적용)
+augment_transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.RandomHorizontalFlip(p=0.5),  # 좌우 반전
+    transforms.RandomRotation(10),          # 회전
+    transforms.ColorJitter(brightness=0.2, contrast=0.2),  # 밝기 & 대비 변경
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+])
+
+# ✅ 일반 변환 (증강 X)
+base_transform = transforms.Compose([
     transforms.ToPILImage(),
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -49,14 +60,17 @@ class DrowsinessDataset(Dataset):
 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        if self.transform:
-            image = self.transform(image)
+        # ✅ 하품(0), 졸음(1) 데이터만 증강 적용
+        if label in [0, 1]:
+            image = augment_transform(image)
+        else:
+            image = base_transform(image)
 
         return image, label
 
 # 📌 DataLoader 설정
-train_dataset = DrowsinessDataset("train.csv", transform=transform)
-val_dataset = DrowsinessDataset("val.csv", transform=transform)
+train_dataset = DrowsinessDataset("train.csv")
+val_dataset = DrowsinessDataset("val.csv")
 
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
@@ -79,26 +93,20 @@ class DrowsinessModel(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2, 2)
+            
         )
 
-        # LSTM (시계열 학습)
-        self.lstm = nn.LSTM(input_size=64 * 28 * 28, hidden_size=128, num_layers=1, batch_first=True)
-
-        # 최종 분류기
-        self.fc = nn.Linear(128, 3)  # 3개의 클래스 (하품, 졸음, 정상)
+        # Fully Connected Layer (LSTM 대신)
+        self.fc = nn.Sequential(
+            nn.Linear(64 * 28 * 28, 256),
+            nn.ReLU(),
+            nn.Linear(256, 3)  # 3개 클래스 (하품, 졸음, 정상)
+        )
 
     def forward(self, x):
-        batch_size = x.size(0)
-        
-        # CNN 특징 추출
-        x = self.cnn(x)
-        x = x.view(batch_size, 1, -1)  # LSTM 입력을 위한 형태 변환
-        
-        # LSTM 학습
-        x, _ = self.lstm(x)
-
-        # 최종 분류
-        x = self.fc(x[:, -1, :])
+        x = self.cnn(x)  # CNN 특징 추출
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc(x)  # FC Layer로 분류
         return x
 
 # 📌 학습 설정
@@ -110,7 +118,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # 📌 학습 루프
-num_epochs = 5 # 원하는 에포크 수 설정
+num_epochs = 10 # 원하는 에포크 수 설정
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
@@ -130,8 +138,8 @@ for epoch in range(num_epochs):
 
 print("🎯 학습 완료!")
 # 📌 학습된 모델 저장
-torch.save(model.state_dict(), "drowsiness_model.pth")
-print("💾 모델 저장 완료: drowsiness_model.pth")
+torch.save(model.state_dict(), "drowsiness_model_1.pth")
+print("💾 모델 저장 완료: drowsiness_model_1.pth")
 
 # 모델 평가 모드
 model.eval()
