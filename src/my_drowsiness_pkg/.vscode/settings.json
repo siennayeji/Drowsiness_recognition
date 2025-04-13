@@ -1,0 +1,24 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/sienna/Workspace/dream/install/my_drowsiness_pkg/lib/python3.10/site-packages",
+        "/home/sienna/Workspace/graduate_ws/build/rtabmap_python",
+        "/home/sienna/Workspace/graduate_ws/install/rtabmap_python/lib/python3.10/site-packages",
+        "/home/sienna/Workspace/graduate_ws/install/rtabmap_msgs/local/lib/python3.10/dist-packages",
+        "/home/sienna/Workspace/graduate_ws/install/realsense2_camera_msgs/local/lib/python3.10/dist-packages",
+        "/home/sienna/Workspace/graduate_ws/build/bringup",
+        "/home/sienna/Workspace/graduate_ws/install/bringup/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/sienna/Workspace/dream/install/my_drowsiness_pkg/lib/python3.10/site-packages",
+        "/home/sienna/Workspace/graduate_ws/build/rtabmap_python",
+        "/home/sienna/Workspace/graduate_ws/install/rtabmap_python/lib/python3.10/site-packages",
+        "/home/sienna/Workspace/graduate_ws/install/rtabmap_msgs/local/lib/python3.10/dist-packages",
+        "/home/sienna/Workspace/graduate_ws/install/realsense2_camera_msgs/local/lib/python3.10/dist-packages",
+        "/home/sienna/Workspace/graduate_ws/build/bringup",
+        "/home/sienna/Workspace/graduate_ws/install/bringup/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}

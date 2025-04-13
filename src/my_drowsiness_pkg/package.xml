@@ -1,0 +1,16 @@
+<package format="3">
+  <name>my_drowsiness_pkg</name>
+  <version>0.0.0</version>
+  <description>Python-only ROS 2 drowsiness detection</description>
+  <maintainer email="you@example.com">sienna</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
