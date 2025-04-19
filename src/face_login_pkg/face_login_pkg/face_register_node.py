@@ -37,11 +37,19 @@ class FaceRegisterNode(Node):
         self.get_logger().info("📸 얼굴 등록 노드 실행 중...")
 
     def email_callback(self, msg):
-        email = msg.data.strip().lower()
+        full_email = msg.data.strip()
+        
+        if not full_email.startswith("[face_register]"):
+            self.get_logger().info("⚠️ [face_register] prefix 없음 → 무시됨")
+            return
+        
+        email = full_email.replace("[face_register]", "").strip().lower()
+
         if email != self.current_email:
             self.current_email = email
             self.embedding_registered = False  # 새로운 이메일일 때만 초기화
-        self.get_logger().info(f"📩 이메일 수신됨: {self.current_email}")
+
+        self.get_logger().info(f"📩 얼굴 등록용 이메일 수신됨: {self.current_email}")
 
     def image_callback(self, msg):
         if not self.current_email or self.embedding_registered:
