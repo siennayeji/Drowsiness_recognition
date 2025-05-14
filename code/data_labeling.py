@@ -1,69 +1,106 @@
 import os
-import json
-import pandas as pd
 import glob
+import json
+import torch
+from PIL import Image
+import subprocess
 
-# 🔹 데이터 폴더 (Train / Validation 따로 지정)
-train_json_dir = "/home/sienna/my_ws/data/train/json"  # Train JSON 경로
-train_image_dir = "/home/sienna/my_ws/data/train/image"  # Train 이미지 경로
+class SequenceDataset(torch.utils.data.Dataset):
+    def __init__(self, json_root_dir, image_root_dir, label_map, transform=None, use_face=True):
+        self.samples = []
+        self.transform = transform
+        self.label_map = label_map
+        self.use_face = use_face
 
-val_json_dir = "/home/sienna/my_ws/data/val/json"  # Validation JSON 경로
-val_image_dir = "/home/sienna/my_ws/data/val/image"  # Validation 이미지 경로
+        # ✅ find 명령어로 JSON 경로 수집 (수정됨)
+        json_files = self.find_json_files(json_root_dir)
+        print(f"🔍 [find] JSON 파일 수: {len(json_files)}")
 
-# 🔹 파일명에서 상태 추출 및 라벨 매핑
-def get_label_from_filename(filename):
-    if "하품" in filename:
-        return 0
-    elif "졸음" in filename:
-        return 1
-    else:
-        return 2  # 정상주시, 흡연상태, 통화재현
+        for json_path in json_files:
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
 
-# 🔹 JSON 파일을 읽고 CSV로 변환하는 함수
-def process_json_files(json_dir, image_dir):
-    data_list = []
-    json_files = glob.glob(os.path.join(json_dir, "**", "*.json"), recursive=True)
-    print(f"📂 Found {len(json_files)} JSON files in {json_dir}")
+                category = data.get("scene_info", {}).get("category_name")
+                if category not in label_map:
+                    continue
 
-    for json_file in json_files:
-        with open(json_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+                label = label_map[category]
+                frames = data.get("scene", {}).get("data", [])
+                if len(frames) != 5:
+                    continue
 
-        image_name = data.get("FileInfo", {}).get("FileName")  # JSON에 저장된 이미지 파일명
-        relative_path = os.path.relpath(json_file, json_dir)  # JSON 경로 상대 경로 변환
-        image_path = os.path.join(image_dir, relative_path).replace("\\", "/")  # json -> image 변경
-        image_path = image_path.rsplit(".", 1)[0] + ".jpg"  # 확장자 변경
+                # ✅ rel_path 수정 (중간에 'label'만 제거)
+                rel_path = os.path.relpath(os.path.dirname(json_path), json_root_dir)
+                rel_parts = rel_path.split(os.sep)
+                if "label" in rel_parts:
+                    rel_parts.remove("label")
+                rel_path = os.path.join(*rel_parts)
 
-        if not os.path.exists(image_path):
-            continue  # 이미지 파일이 없으면 건너뜀
+                img_paths = []
+                bboxes = []
+                valid_frames = True
 
-        file_name = data["FileInfo"]["FileName"]
-        label = get_label_from_filename(file_name)
+                for frame in frames:
+                    img_name = frame.get("img_name")
+                    img_path = os.path.join(image_root_dir, rel_path, "img", img_name)
+                    if not os.path.exists(img_path):
+                        valid_frames = False
+                        break
 
-        # 눈과 입 상태 확인
-        left_eye_open = int(data["ObjectInfo"]["BoundingBox"]["Leye"]["Opened"])
-        right_eye_open = int(data["ObjectInfo"]["BoundingBox"]["Reye"]["Opened"])
-        mouth_open = int(data["ObjectInfo"]["BoundingBox"]["Mouth"]["Opened"])
+                    occupant = frame.get("occupant", [])
+                    if not occupant:
+                        valid_frames = False
+                        break
 
-        # 얼굴 크기 계산
-        face_box = data["ObjectInfo"]["BoundingBox"]["Face"]["Position"]
-        face_width = face_box[2] - face_box[0]
-        face_height = face_box[3] - face_box[1]
+                    bbox = occupant[0].get("face_b_box") if self.use_face else occupant[0].get("body_b_box")
+                    if not bbox or len(bbox) != 4:
+                        valid_frames = False
+                        break
 
-        # 데이터 저장
-        data_list.append([file_name, image_path, left_eye_open, right_eye_open, mouth_open, face_width, face_height, label])
+                    img_paths.append(img_path)
+                    bboxes.append(bbox)
 
-    print(f"✅ Loaded {len(data_list)} items from {json_dir}")
-    return data_list
+                if valid_frames:
+                    self.samples.append({
+                        "img_paths": img_paths,
+                        "bboxes": bboxes,
+                        "label": label
+                    })
 
-# 🔹 Train 데이터 처리
-train_data = process_json_files(train_json_dir, train_image_dir)
-df_train = pd.DataFrame(train_data, columns=["FileName", "ImagePath", "LeftEye_Open", "RightEye_Open", "Mouth_Open", "Face_Width", "Face_Height", "Label"])
-df_train.to_csv("train.csv", index=False)
-print("✅ Train CSV 저장 완료!")
+            except Exception as e:
+                print(f"⚠️ JSON 처리 실패: {json_path} → {e}")
 
-# 🔹 Validation 데이터 처리
-val_data = process_json_files(val_json_dir, val_image_dir)
-df_val = pd.DataFrame(val_data, columns=["FileName", "ImagePath", "LeftEye_Open", "RightEye_Open", "Mouth_Open", "Face_Width", "Face_Height", "Label"])
-df_val.to_csv("val.csv", index=False)
-print("✅ Validation CSV 저장 완료!")
+    def find_json_files(self, root):
+        try:
+            # ✅ 여기 수정: 'json' 붙이지 않음
+            result = subprocess.run(["find", root, "-name", "*.json"],
+                                    stdout=subprocess.PIPE, text=True, check=True)
+            json_paths = result.stdout.strip().split("\n")
+            return [p for p in json_paths if p.strip().endswith(".json")]
+        except subprocess.CalledProcessError as e:
+            print(f"❌ find 명령어 실패: {e}")
+            return []
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        img_paths = sample["img_paths"]
+        label = sample["label"]
+
+        seq_imgs = []
+        for img_path, bbox in zip(img_paths, sample["bboxes"]):
+            x, y, w, h = bbox
+            try:
+                with Image.open(img_path).convert('RGB') as img:
+                    crop = img.crop((x, y, x + w, y + h))
+                    if self.transform:
+                        crop = self.transform(crop)
+                    seq_imgs.append(crop)
+            except:
+                return None
+
+        seq_imgs = torch.stack(seq_imgs)
+        return seq_imgs, label
